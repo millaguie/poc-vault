@@ -1,0 +1,14 @@
+#!/bin/bash
+timeout 15 bash -c 'until curl $VAULT_ADDR; do sleep 0.5; done'
+
+if [ ! -f /vault/secret.output ] ; then
+  echo "No secrets found, initializing vault"
+  vault operator init > /vault/secret.output
+fi
+
+for i in $(seq 1 3); do
+  echo "unsealing vault 1/$i" 
+  vault operator unseal $(grep "Unseal Key" /vault/secret.output | awk '{print $4}' | head -n $i | tail -n 1)
+done
+
+vault status
