@@ -1,0 +1,71 @@
+---
+version: '3.9'
+
+x-common-vaues:
+  vault_docker_image: &VAULT_DOCKER_IMAGE vault:1.12.0
+
+services:
+  vault-perms:
+    image: *VAULT_DOCKER_IMAGE
+    volumes:
+      - vault-data:/vault/data/:rw
+    command: sh -c "chown vault:vault /vault/ -R"
+  operator:
+      build: ./operator
+      environment:
+        VAULT_ADDR: http://vault:8200
+      container_name: operator
+      volumes:
+      - vault-secrets:/vault/:rw
+      depends_on:
+          - vault
+  vault:
+    image: *VAULT_DOCKER_IMAGE
+    hostname: vault
+    restart: on-failure
+    depends_on:
+      - vault-perms
+    ports:
+      - '8200:8200'
+      - '8201:8201'
+    command: server
+    environment:
+      VAULT_ADDR: "http://0.0.0.0:8200"
+      VAULT_LOCAL_CONFIG: >-
+        {
+          "backend":
+          {
+            "file": 
+            {
+              "path": "/vault/data"
+            }
+          },
+          "listener":
+          { 
+            "tcp":
+            {
+              "address": "0.0.0.0:8200",
+              "cluster_address": "0.0.0.0:8201",
+              "tls_disable": "true"
+            }
+          },
+          "default_lease_ttl": "168h",
+          "max_lease_ttl": "720h",
+          "api_addr": "http://0.0.0.0:8200",
+          "cluster_addr": "https://0.0.0.0:8201",
+          "ui": true
+        }
+    volumes:
+      - vault-data:/vault/data/:rw
+    healthcheck:
+      test: ["CMD", "/opt/vault/bin/vault", "status"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    cap_add:
+      - IPC_LOCK
+
+volumes:
+  vault-data:
+  vault-secrets:
