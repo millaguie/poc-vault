@@ -5,18 +5,66 @@ x-common-vaues:
   vault_docker_image: &VAULT_DOCKER_IMAGE vault:1.12.0
 
 services:
+  database:
+    image: postgres:13.4
+    ports:
+      - 5432:5432
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: secret
+      POSTGRES_DB: testdb
+      PGDATA: /var/lib/postgresql/data/pgdata
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    volumes:
+      - postgres-data:/var/lib/postgresql/data/pgdata
+      - ./createtable.sh:/docker-entrypoint-initdb.d/createtable.sh
   vault-perms:
     image: *VAULT_DOCKER_IMAGE
     volumes:
       - vault-data:/vault/data/:rw
     command: sh -c "chown vault:vault /vault/ -R"
+  test-api-hc:
+    build: ./test-api-hc
+    ports:
+      - 8080:80
+    environment:
+      VAULT_ADDR: http://vault:8200
+      DB_HOST: database
+      DB_NAME: testdb
+    depends_on:
+      - operator
+    restart: on-failure
+    volumes:
+      - vault-db-secrets:/vault-db-secrets/:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 2
+      start_period: 10s
+    labels:
+      hc.restart: true
+  autoheal:
+    restart: always
+    image: willfarrell/autoheal
+    environment:
+      - AUTOHEAL_CONTAINER_LABEL=hc.restart
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
   operator:
       build: ./operator
       environment:
         VAULT_ADDR: http://vault:8200
+        POSTGRES_PASSWORD: secret
       container_name: operator
       volumes:
       - vault-secrets:/vault/:rw
+      - vault-db-secrets:/vault-db-secrets/:rw
       depends_on:
           - vault
   vault:
@@ -25,6 +73,7 @@ services:
     restart: on-failure
     depends_on:
       - vault-perms
+      - database
     ports:
       - '8200:8200'
       - '8201:8201'
@@ -69,3 +118,5 @@ services:
 volumes:
   vault-data:
   vault-secrets:
+  postgres-data:
+  vault-db-secrets:

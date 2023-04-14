@@ -1,5 +1,5 @@
 #!/bin/bash
-timeout 15 bash -c 'until curl $VAULT_ADDR; do sleep 0.5; done'
+timeout 15 bash -c 'until curl -s $VAULT_ADDR; do sleep 0.5; done'
 
 if [ ! -f /vault/secret.output ] ; then
   echo "No secrets found, initializing vault"
@@ -11,4 +11,46 @@ for i in $(seq 1 3); do
   vault operator unseal $(grep "Unseal Key" /vault/secret.output | awk '{print $4}' | head -n $i | tail -n 1)
 done
 
+export VAULT_TOKEN=$(grep "Initial Root Token" /vault/secret.output | awk '{print $4}')
+
+# wait until vault is unsealed
+timeout 15 bash -c 'until vault status; do sleep 0.5; done'
+
+# check if the dbs path in vault is already created
+if ! vault secrets list | grep -q "dbs"; then
+  echo "creating dbs path in vault"
+  vault secrets enable -path=dbs database
+  echo "add postgres connection config"
+  vault write dbs/config/testdb \
+    plugin_name=postgresql-database-plugin \
+    allowed_roles="testdb" \
+    username="postgres" \
+    password=${POSTGRES_PASSWORD} \
+    verify_connection=false \
+    connection_url="postgresql://{{username}}:{{password}}@database:5432/postgres?sslmode=disable"
+  echo "add postgres admin role"
+  vault write dbs/roles/testdb \
+    db_name=testdb \
+    default_ttl=2m \
+    max_ttl=5m \
+    creation_statements="CREATE ROLE \"{{name}}\" WITH LOGIN PASSWORD '{{password}}' \
+                         VALID UNTIL '{{expiration}}'; \
+                         GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO \"{{name}}\";
+                         GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO \"{{name}}\";"
+  echo "
+  path \"dbs/creds/testdb\" {
+    capabilities = [\"read\", \"list\"]
+  }
+  " > /tmp/dbs_policy.hcl
+  vault policy write dbs /tmp/dbs_policy.hcl
+  vault token create -policy=dbs
+  echo "create token file"
+  vault token create -policy=dbs | grep token\ | awk '{print $2}' > /vault-db-secrets/token
+else
+  echo "dbs path already exists"
+
+fi
+
+
 vault status
+vault read dbs/creds/testdb
