@@ -1,32 +1,32 @@
 ---
-version: '3.9'
-
-x-common-vaues:
-  vault_docker_image: &VAULT_DOCKER_IMAGE vault:1.12.0
+x-common-values:
+  vault_docker_image: &VAULT_DOCKER_IMAGE hashicorp/vault:2.2.1
 
 services:
   database:
-    image: postgres:13.4
+    image: postgres:18.6
     ports:
       - 5432:5432
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: secret
       POSTGRES_DB: testdb
-      PGDATA: /var/lib/postgresql/data/pgdata
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "postgres"]
-      interval: 60s
+      interval: 5s
       timeout: 10s
       retries: 3
       start_period: 30s
     volumes:
-      - postgres-data:/var/lib/postgresql/data/pgdata
+      # Postgres 18+ keeps its data under /var/lib/postgresql/<major>/docker.
+      - postgres-data:/var/lib/postgresql
       - ./createtable.sh:/docker-entrypoint-initdb.d/createtable.sh
   vault-perms:
     image: *VAULT_DOCKER_IMAGE
     volumes:
       - vault-data:/vault/data/:rw
+    # The image runs as the vault user; chown needs root.
+    user: root
     command: sh -c "chown vault:vault /vault/ -R"
   test-api-hc:
     build: ./test-api-hc
@@ -37,7 +37,8 @@ services:
       DB_HOST: database
       DB_NAME: testdb
     depends_on:
-      - operator
+      operator:
+        condition: service_completed_successfully
     restart: on-failure
     volumes:
       - vault-db-secrets:/vault-db-secrets/:ro
@@ -57,7 +58,10 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
   operator:
-      build: ./operator
+      build:
+        context: ./operator
+        args:
+          VAULT_IMAGE: *VAULT_DOCKER_IMAGE
       environment:
         VAULT_ADDR: http://vault:8200
         POSTGRES_PASSWORD: secret
@@ -66,14 +70,17 @@ services:
       - vault-secrets:/vault/:rw
       - vault-db-secrets:/vault-db-secrets/:rw
       depends_on:
-          - vault
+        vault:
+          condition: service_started
+        database:
+          condition: service_healthy
   vault:
     image: *VAULT_DOCKER_IMAGE
     hostname: vault
     restart: on-failure
     depends_on:
-      - vault-perms
-      - database
+      vault-perms:
+        condition: service_completed_successfully
     ports:
       - '8200:8200'
       - '8201:8201'
@@ -107,13 +114,17 @@ services:
     volumes:
       - vault-data:/vault/data/:rw
     healthcheck:
-      test: ["CMD", "/opt/vault/bin/vault", "status"]
+      # `vault status` exits 2 while sealed, so "healthy" means unsealed.
+      test: ["CMD", "vault", "status", "-address=http://127.0.0.1:8200"]
       interval: 60s
       timeout: 10s
       retries: 3
       start_period: 30s
     cap_add:
       - IPC_LOCK
+    # Vault runs as a non-root user and needs this to lock its memory.
+    ulimits:
+      memlock: -1
 
 volumes:
   vault-data:

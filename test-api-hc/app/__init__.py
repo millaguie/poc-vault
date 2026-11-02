@@ -8,6 +8,7 @@ import psycopg2
 from flask import Flask, request, jsonify
 import hvac
 import logging
+from contextlib import closing
 
 
 def create_app():
@@ -30,7 +31,8 @@ def create_app():
     @app.route('/health')
     def health():
         try:
-            conn = psycopg2.connect(password=dbPassword['data']['password'], port="5432", host=os.environ['DB_HOST'], dbname=os.environ['DB_NAME'], user=dbPassword['data']['username'])
+            with closing(psycopg2.connect(password=dbPassword['data']['password'], port="5432", host=os.environ['DB_HOST'], dbname=os.environ['DB_NAME'], user=dbPassword['data']['username'])):
+                pass
             return "OK", 200
         except Exception as e:
             logging.error(e)
